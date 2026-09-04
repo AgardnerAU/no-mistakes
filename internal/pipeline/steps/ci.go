@@ -41,7 +41,12 @@ type CIStep struct {
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
 	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
-	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
+	// authorizedRefusal is the last decision-reversion refusal shown at a gate.
+	// A fix response authorises that refusal and nothing wider; it is per
+	// process, so a daemon restart simply re-parks rather than inheriting an
+	// authorisation nobody in this process ever saw given.
+	authorizedRefusal    *decisionReversionError
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
@@ -500,6 +505,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				if sctx.Fixing {
 					fixTargets = reportedIssues
 				}
+				// A check the maintainer declared in ci.decision_checks leaves
+				// the fix agent's reach entirely: its red state means a person
+				// must act, and a fix round is the pipeline making that
+				// decision itself. Parking here is what keeps it out of the fix
+				// prompt and out of FetchFailedCheckLogs; the filter below is
+				// the same rule stated where the targets are built, so a later
+				// change to this branch cannot quietly hand one back.
+				decisionChecks, repairableTargets := splitDecisionChecks(fixTargets, ciConfig(sctx))
+				fixTargets = repairableTargets
+				if len(decisionChecks) > 0 {
+					sctx.Log(fmt.Sprintf("issues detected: %s - declared as requiring a human decision, parking without a fix round...", strings.Join(decisionChecks, ", ")))
+					return ciDecisionCheckOutcome(decisionChecks), nil
+				}
 				fixKey := encodeLastFixedChecks(fixTargets, mergeConflict)
 				fixCompletedAt := terminalFailureCompletionTimes(checks)
 				issueDesc := strings.Join(fixTargets, ", ")
@@ -516,6 +534,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					previousHeadSHA := sctx.Run.HeadSHA
 					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+						return outcome, nil
+					}
+					if outcome := ciFixReversionOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
 					if err != nil {
@@ -550,6 +571,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					previousHeadSHA := sctx.Run.HeadSHA
 					changed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+						return outcome, nil
+					}
+					if outcome := ciFixReversionOutcome(sctx, issueDesc, err); outcome != nil {
 						return outcome, nil
 					}
 					if err != nil {
