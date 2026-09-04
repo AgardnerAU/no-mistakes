@@ -585,7 +585,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 	case detectErr != nil:
 		refusal = &decisionReversionError{reason: detectErr.Error()}
 	case len(evidence) > 0:
-		refusal = &decisionReversionError{evidence: evidence}
+		refusal = newReversionRefusal(evidence)
 	}
 	if refusal != nil {
 		if !sctx.Fixing || !s.authorizedRefusal.authorizes(refusal) {
