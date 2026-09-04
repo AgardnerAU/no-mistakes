@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.1](https://github.com/AgardnerAU/no-mistakes/compare/v1.60.0...v1.60.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **pipeline:** stop the CI fix round reversing human decisions ([#1](https://github.com/AgardnerAU/no-mistakes/issues/1)) ([ad42475](https://github.com/AgardnerAU/no-mistakes/commit/ad42475109f9470827c90f804592b561c7909072))
+
 ## [1.60.0](https://github.com/kunchenguid/no-mistakes/compare/v1.59.3...v1.60.0) (2026-08-28)
 
 
