@@ -46,6 +46,8 @@ const ciFailingCheckFixRules = `- If a failing check is caused by this PR's code
 		- Do not refactor beyond what is needed for that root-cause fix.
 		- Verify the fix by running the most relevant commands locally before finishing.`
 
+const ciDecisionPreservationRule = `- Never repair a check by undoing work this branch deliberately did: do not delete content a guard is meant to cover, and do not put back code a recorded decision removed. If the only way to make a check green is to undo such a decision, make no change to it and say so - a red check can mean a person's decision is outstanding rather than that something is broken.`
+
 const ciMergeConflictFixRules = `- Resolve the merge conflicts by applying the minimal necessary changes.
 		- Do not make unrelated file edits.
 ` + ciFixerClassRules + `
@@ -203,6 +205,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		promptIntro = "The following CI checks have failed on this PR. Diagnose and fix the issues."
 		promptRules = ciFailingCheckFixRules
 	}
+	promptRules += "\n\t\t" + ciDecisionPreservationRule
 
 	prompt := fmt.Sprintf(
 		`%s
@@ -574,6 +577,19 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
+	// Compare the proposed repair against the head from before the fix round,
+	// before staging anything. This also catches agents that committed their own
+	// changes because the guard is anchored to the run head, not HEAD.
+	if !sctx.Fixing {
+		evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+		if detectErr != nil {
+			return ciRepairResult{}, &decisionReversionError{reason: detectErr.Error()}
+		}
+		if len(evidence) > 0 {
+			return ciRepairResult{}, &decisionReversionError{evidence: evidence}
+		}
+	}
+
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return ciRepairResult{}, fmt.Errorf("check CI changes: %w", err)
