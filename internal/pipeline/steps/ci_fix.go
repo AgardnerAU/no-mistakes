@@ -592,6 +592,13 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 			s.authorizedRefusal = refusal
 			return ciRepairResult{}, refusal
 		}
+		// Spent on use. The person authorised the round they were looking at,
+		// not a standing permission: a CI repair restarts validation from
+		// Review and this step runs again, so a later fix response - for some
+		// unrelated failure, at a gate that never showed this reversion - must
+		// not inherit it.
+		s.authorizedRefusal = nil
+		sctx.Log("committing a repair whose reversion of branch work was explicitly authorised at the gate")
 	}
 
 	status, err := stepGitRun(sctx, "status", "--porcelain")
