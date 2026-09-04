@@ -56,6 +56,9 @@ type CIStep struct {
 	pendingFixSummary    string                    // one-line summary of the repair this execution published, attached to the outcome it ends with
 	pendingRepairPublish bool
 	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
+	// authorizedRefusal is the exact decision-reversion refusal last shown at a gate.
+	// It is process-local so a restart cannot inherit a decision nobody saw here.
+	authorizedRefusal *decisionReversionError
 	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time

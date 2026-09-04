@@ -577,16 +577,20 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 }
 
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
-	// Compare the proposed repair against the head from before the fix round,
-	// before staging anything. This also catches agents that committed their own
-	// changes because the guard is anchored to the run head, not HEAD.
-	if !sctx.Fixing {
-		evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
-		if detectErr != nil {
-			return ciRepairResult{}, &decisionReversionError{reason: detectErr.Error()}
-		}
-		if len(evidence) > 0 {
-			return ciRepairResult{}, &decisionReversionError{evidence: evidence}
+	// Every round is checked, including a fix response: the response launches a
+	// fresh agent turn, so its result may differ from the refusal the person saw.
+	evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+	var refusal *decisionReversionError
+	switch {
+	case detectErr != nil:
+		refusal = &decisionReversionError{reason: detectErr.Error()}
+	case len(evidence) > 0:
+		refusal = &decisionReversionError{evidence: evidence}
+	}
+	if refusal != nil {
+		if !sctx.Fixing || !s.authorizedRefusal.authorizes(refusal) {
+			s.authorizedRefusal = refusal
+			return ciRepairResult{}, refusal
 		}
 	}
 
