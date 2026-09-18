@@ -189,15 +189,12 @@ func stepEnvironment(sctx *pipeline.StepContext) []string {
 // step-scoped PATH and credential environment stay in effect.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	out, err := stepGitRunRaw(sctx, args...)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
+	return strings.TrimSpace(out), err
 }
 
-// stepGitRunRaw is stepGitRun without the trim. Callers that read blob content
-// or NUL-separated path lists need the bytes git produced: trimming would
-// silently rewrite a first line's indentation and drop a trailing separator.
+// stepGitRunRaw preserves NUL-delimited paths and porcelain status columns, and
+// is what callers reading blob content need: trimming would silently rewrite a
+// first line's indentation and drop a trailing separator.
 func stepGitRunRaw(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
@@ -226,6 +223,24 @@ func stepGitPush(sctx *pipeline.StepContext, remote, ref, expectedSHA string, fo
 		}
 	}
 	args = append(args, "HEAD:"+ref)
+	_, err := stepGitRun(sctx, args...)
+	return err
+}
+
+// stepGitPushCommit pushes an explicit commit to a remote ref with the
+// StepContext's environment, mirroring git.PushCommit's argument assembly. The
+// explicit source SHA (rather than HEAD) is what lets a caller publish exactly
+// the commit it verified, even if the worktree moves underneath it.
+func stepGitPushCommit(sctx *pipeline.StepContext, remote, commitSHA, ref, expectedSHA string, forceWithLease bool) error {
+	args := []string{"push", remote}
+	if forceWithLease {
+		if expectedSHA != "" {
+			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
+		} else {
+			args = append(args, "--force-with-lease")
+		}
+	}
+	args = append(args, commitSHA+":"+ref)
 	_, err := stepGitRun(sctx, args...)
 	return err
 }

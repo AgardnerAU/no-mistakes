@@ -152,7 +152,7 @@ func TestCIRepair_RefusesToUndoAReviewedWorkflowApproval(t *testing.T) {
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want a decision-reversion refusal", err)
 	}
-	if changed {
+	if changed.HeadAdvanced {
 		t.Error("a refused repair must not report a changed head")
 	}
 	if head := gitCmd(t, dir, "rev-parse", "HEAD"); head != headSHA {
@@ -274,7 +274,7 @@ func TestCIRepair_AllowsAnOrdinaryRepairOfTheBranchsOwnCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ordinary CI repair was refused: %v", err)
 	}
-	if !changed {
+	if !changed.HeadAdvanced {
 		t.Fatal("ordinary CI repair should commit")
 	}
 }
@@ -339,7 +339,7 @@ func TestCIRepair_AuthorisedFixCommitsTheReversionThePersonSaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the authorised reversion was still refused: %v", err)
 	}
-	if !changed {
+	if !changed.HeadAdvanced {
 		t.Fatal("an authorised reversion should commit")
 	}
 }
@@ -570,7 +570,7 @@ func TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule(t *testing.T
 
 	step := &CIStep{}
 	host := &recordingDecisionHost{}
-	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, []string{"build"}, false); err != nil {
+	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, ciFixTargets{Checks: []scm.CheckTarget{{Name: "build"}}}); err != nil {
 		t.Fatalf("autoFixCI: %v", err)
 	}
 	if len(prompts) != 1 {

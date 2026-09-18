@@ -3,8 +3,10 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -780,6 +782,35 @@ func TestGetChecksRejectsIncompleteWorkflowPagination(t *testing.T) {
 	}
 }
 
+func TestGetPRContentReadsTitleAndBody(t *testing.T) {
+	t.Parallel()
+
+	body := "## Pipeline\n\n" + "Updates from no-mistakes\n"
+	encoded, err := json.Marshal(map[string]string{"title": "fix: restamp", "body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json title,body": {stdout: string(encoded) + "\n"},
+	}), nil, "", "test/repo")
+
+	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetPRContent() error = %v", err)
+	}
+	if got.Title != "fix: restamp" || got.Body != body {
+		t.Fatalf("GetPRContent() = %+v, want title and body from gh", got)
+	}
+}
+
+func TestGetPRContentFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(nil), nil, "", "test/repo")
+	if _, err := host.GetPRContent(context.Background(), &scm.PR{}); err == nil {
+		t.Fatal("GetPRContent() with no PR identity: expected error, got nil")
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
@@ -821,6 +852,29 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestCreatePRAddsDraftFlagWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	const body = "## What Changed\n\n- open as draft"
+	host := NewWithFork(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr create --head feature/draft --base main --repo test/repo --draft --title fix: draft --body-file -": {
+			stdout:    "https://github.com/test/repo/pull/7\n",
+			wantStdin: body,
+		},
+	}), nil, "", "test/repo", "", true)
+
+	pr, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{
+		Title: "fix: draft",
+		Body:  body,
+	})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if pr == nil || pr.Number != "7" {
+		t.Fatalf("CreatePR() PR = %+v, want #7", pr)
+	}
+}
+
 func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	t.Parallel()
 
@@ -841,6 +895,28 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 	if updated != pr {
 		t.Fatalf("UpdatePR() = %+v, want original PR", updated)
+	}
+}
+
+func TestUpdatePROmitsTitleWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{
+		Body: "marker only",
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := strings.Join(recorded[0], " ")
+	if strings.Contains(got, "--title") {
+		t.Fatalf("body-only UpdatePR must not pass --title, got %v", recorded[0])
+	}
+	if !strings.Contains(got, "--body-file") {
+		t.Fatalf("body-only UpdatePR must still pass --body-file, got %v", recorded[0])
 	}
 }
 
@@ -885,6 +961,49 @@ func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
 	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
 		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
 	}
+}
+
+func TestSetPRBaseBranchTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{URL: prURL}, "epic/feature"); err != nil {
+		t.Fatalf("SetPRBaseBranch() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if selector := got[3]; selector != prURL {
+		t.Fatalf("edit selector = %q, want the known PR URL %q", selector, prURL)
+	}
+	if !containsArg(got, "--base") || !containsArg(got, "epic/feature") {
+		t.Fatalf("expected --base epic/feature, got %v", got)
+	}
+}
+
+func TestSetPRBaseBranchFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+	if err := host.SetPRBaseBranch(context.Background(), &scm.PR{}, "epic/feature"); err == nil {
+		t.Fatal("SetPRBaseBranch() with no PR identity: expected error, got nil")
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
@@ -1252,6 +1371,56 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 	}
 }
 
+func TestFetchFailedCheckTargetLogsSelectsProviderIdentityOverName(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {
+			stdout: `[{"databaseId":102,"name":"CI"}]` + "\n",
+		},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"build","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 202 --log": {stdout: "selected build failed\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{Name: "build", ProviderID: "github-check-run:202"}})
+	if err != nil {
+		t.Fatalf("FetchFailedCheckTargetLogs() error = %v", err)
+	}
+	if len(logs) != 1 || logs[0].Output != "selected build failed" {
+		t.Fatalf("FetchFailedCheckTargetLogs() = %+v, want selected check's logs", logs)
+	}
+}
+
+func TestFetchFailedCheckTargetLogsReturnsPartialLogsWithRetrievalError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {stdout: `[{"databaseId":102,"name":"CI"}]` + "\n"},
+		"gh run view 102 --json jobs":     {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"},{"databaseId":202,"name":"lint","conclusion":"failure"}]}` + "\n"},
+		"gh run view 102 --job 201 --log": {stdout: "build failed\n"},
+		"gh run view 102 --job 202 --log": {stderr: "expired", code: 1},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:201"}, {ProviderID: "github-check-run:202"}})
+	if err != nil || len(logs) != 2 || logs[0].Output != "build failed" || logs[1].Err == nil || !strings.Contains(logs[1].Err.Error(), "job 202") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want retained partial logs and job 202 error", logs, err)
+	}
+}
+
+func TestFetchFailedCheckTargetLogsReportsMissingSelectedJob(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run list --branch feature --commit abc123 --status failure --limit 20 --json databaseId,headSha,name,displayTitle,workflowName": {stdout: `[{"databaseId":102,"name":"CI"}]` + "\n"},
+		"gh run view 102 --json jobs": {stdout: `{"jobs":[{"databaseId":201,"name":"build","conclusion":"failure"}]}` + "\n"},
+	}), nil, "", "")
+
+	logs, err := host.FetchFailedCheckTargetLogs(context.Background(), &scm.PR{Number: "123"}, "feature", "abc123", []scm.CheckTarget{{ProviderID: "github-check-run:999"}})
+	if err != nil || len(logs) != 1 || logs[0].Err == nil || !strings.Contains(logs[0].Err.Error(), "github-check-run:999") {
+		t.Fatalf("FetchFailedCheckTargetLogs() = (%+v, %v), want explicit missing-target error", logs, err)
+	}
+}
+
 // A GitHub Actions action-download outage fails a job inside "Set up job",
 // before any repository step runs. PreRunFailures must flag exactly that job -
 // read structurally from the setup step's conclusion, never from log text - and
@@ -1346,7 +1515,7 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 				`{"number":42,"url":"https://github.com/parent/repo/pull/42","baseRefName":"main","headRefName":"feature/refactor","headRepositoryOwner":{"login":"fork-owner"}}` +
 				`]` + "\n",
 		},
-	}), nil, "", "parent/repo", "fork-owner/repo")
+	}), nil, "", "parent/repo", "fork-owner/repo", false)
 
 	pr, err := host.FindPR(context.Background(), branch, "main")
 	if err != nil {
@@ -1466,7 +1635,7 @@ func TestFindPRForkRejectsMissingHeadIdentity(t *testing.T) {
 				"gh pr list --head " + branch + " --base main --repo parent/repo --state open --json number,url,baseRefName,headRefName,headRepositoryOwner": {
 					stdout: tc.output + "\n",
 				},
-			}), nil, "", "parent/repo", "fork-owner/repo")
+			}), nil, "", "parent/repo", "fork-owner/repo", false)
 
 			pr, err := host.FindPR(context.Background(), branch, "main")
 			if err == nil {
@@ -1510,6 +1679,125 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil", err)
+	}
+}
+
+func TestAvailableReportsDeadlineExceededInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(ctx)
+	if err == nil {
+		t.Fatal("Available() error = nil, want timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Available() error = %v, want context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Available() error = %v, want timed out message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure on timeout", err)
+	}
+}
+
+func TestAvailableReportsCancellationInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(ctx)
+	if err == nil {
+		t.Fatal("Available() error = nil, want timeout error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Available() error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("Available() error = %v, want interrupted message", err)
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("Available() error = %v, must not report timeout on cancellation", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure on cancellation", err)
+	}
+}
+
+func TestAvailableReportsMissingBinaryInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "no-mistakes-missing-gh-binary")
+	}, func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want missing-binary error")
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("Available() error = %v, want exec.ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "not on PATH") {
+		t.Fatalf("Available() error = %v, want not on PATH message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure when gh is missing", err)
+	}
+}
+
+func TestAvailableReportsCommandFactoryMissingBinaryInsteadOfAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitHubHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "GITHUB_TEST_HELPER=1")
+		cmd.Err = &exec.Error{Name: name, Err: fs.ErrNotExist}
+		return cmd
+	}, func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want missing-binary error")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Available() error = %v, want fs.ErrNotExist", err)
+	}
+	if !strings.Contains(err.Error(), "not on PATH") {
+		t.Fatalf("Available() error = %v, want not on PATH message", err)
+	}
+	if strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, must not report auth failure when command factory marks gh missing", err)
+	}
+}
+
+func TestAvailableWrapsAuthFailureWithStderr(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {stderr: "github.com\n  X Failed to log in\n", code: 1},
+	}), func() bool { return true }, "", "")
+
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("Available() error = nil, want auth failure")
+	}
+	if !strings.Contains(err.Error(), "not authenticated") {
+		t.Fatalf("Available() error = %v, want not authenticated", err)
+	}
+	if !strings.Contains(err.Error(), "Failed to log in") {
+		t.Fatalf("Available() error = %v, want stderr detail", err)
 	}
 }
 
@@ -1685,5 +1973,27 @@ func TestHost_GetReviewComments(t *testing.T) {
 	}
 	if comments[1].ID != "12346" || comments[1].Line != 0 || comments[1].Author != "greptile-apps" {
 		t.Fatalf("unexpected paginated comment: %#v", comments[1])
+	}
+}
+
+func TestGetPRContentRequiresExplicitStrings(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{`{}`, `null`, `{"title":"Author"}`, `{"body":"Author text"}`, `{"title":"Author","body":null}`, `{"title":null,"body":"Author text"}`, `{"title":"Author","body":42}`, `{"title":false,"body":"text"}`, `[]`, `{"title":`} {
+		t.Run(payload, func(t *testing.T) {
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 42 --repo test/repo --json title,body": {stdout: payload},
+			}), nil, "", "test/repo")
+			got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+			if err == nil || got != (scm.PRContent{}) {
+				t.Fatalf("invalid response accepted: %+v, %v", got, err)
+			}
+		})
+	}
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 42 --repo test/repo --json title,body": {stdout: `{"title":"Author title","body":""}`},
+	}), nil, "", "test/repo")
+	got, err := host.GetPRContent(context.Background(), &scm.PR{Number: "42"})
+	if err != nil || got.Title != "Author title" || got.Body != "" {
+		t.Fatalf("explicit empty body rejected: %+v, %v", got, err)
 	}
 }
