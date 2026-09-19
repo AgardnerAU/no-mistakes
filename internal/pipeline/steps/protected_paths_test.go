@@ -111,10 +111,12 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 			steps := []pipeline.Step{&ReviewStep{}, &TestStep{}, reconcileEnvStep{step: &PushStep{}, env: green}, reconcileEnvStep{step: ci, env: green}}
 			reviews := 0
 			ag := &mockAgent{name: "test", runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				findings := cleanReviewFindings()
 				if strings.HasPrefix(opts.Purpose, "review") {
 					reviews++
+					findings.ReviewedPaths = fullReviewCoverage(t, f.dir, f.sctx.Run.BaseSHA)
 				}
-				output, err := json.Marshal(cleanReviewFindings())
+				output, err := json.Marshal(findings)
 				return &agent.Result{Output: output}, err
 			}}
 			parked := make(chan struct{}, 1)
@@ -161,7 +163,7 @@ func TestCIStep_ProtectedPathRetryUsesPersistedRepair(t *testing.T) {
 				selected = []string{}
 				added = []types.Finding{{ID: "user-1", Severity: "info", Description: "publish the retained repair", Action: types.ActionAutoFix}}
 			}
-			if err := executor.RespondWithOverrides(types.StepCI, types.ActionFix, selected, nil, added); err != nil {
+			if err := executor.RespondWithOverrides(types.StepCI, types.ActionFix, selected, nil, added, ""); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -235,7 +237,7 @@ func persistCIRefusal(t *testing.T, f *ciRepairFixture, outcome *pipeline.StepOu
 	if _, err := f.sctx.DB.InsertStepRound(f.sctx.StepResultID, len(rounds)+1, "initial", &outcome.Findings, nil, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, f.sctx.StepResultID, types.StepStatusAwaitingApproval, 1, &outcome.Findings); err != nil {
+	if err := f.sctx.DB.ParkStepForApproval(f.sctx.Run.ID, f.sctx.StepResultID, types.StepStatusAwaitingApproval, outcome.ExitCode, 1, &outcome.Findings); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -91,7 +91,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
-	if outcome := ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
+	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
@@ -488,12 +488,29 @@ func ciSelectedFindingsPrompt(findings Findings) string {
 	return section + prefix + string(raw) + suffix
 }
 
-func ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+func (s *CIStep) ciFixAgentBudgetOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
 	if err == nil || !errors.Is(err, pipeline.ErrAgentTimeout) {
 		return nil
 	}
 	sctx.Log(fmt.Sprintf("CI auto-fix agent exceeded its invocation budget: %v", err))
-	return ciFixAgentTimeoutOutcome(issueDesc, dirtyRunWorktree(sctx), err)
+	var leftover []string
+	head, headErr := stepGitHeadSHA(sctx)
+	switch {
+	case rebaseInProgress(sctx.Ctx, sctx.WorkDir) || mergeInProgress(sctx.Ctx, sctx.WorkDir):
+		leftover = append(leftover, fmt.Sprintf("The timed-out agent left an unfinished rebase or merge in the run worktree at %s; its partial HEAD is not recorded.", sctx.WorkDir))
+	case headErr == nil && head != "" && head != sctx.Run.HeadSHA:
+		if _, recErr := s.recordLocalRepair(sctx, head); recErr != nil {
+			sctx.Log(fmt.Sprintf("warning: could not record timed-out CI repair head %s: %v", head, recErr))
+			leftover = append(leftover, fmt.Sprintf("The timed-out agent left a committed head at %s in the run worktree.", shortObjectID(head)))
+		} else {
+			sctx.Log("timed-out CI repair head recorded locally; waiting for a decision instead of auto-revalidating")
+			leftover = append(leftover, fmt.Sprintf("The timed-out agent committed %s; it is recorded locally for custody and is not published.", shortObjectID(head)))
+		}
+	}
+	if dirty := dirtyRunWorktree(sctx); dirty != "" {
+		leftover = append(leftover, fmt.Sprintf("The timed-out agent left uncommitted changes in the run worktree at %s; they are not committed or pushed.", dirty))
+	}
+	return ciFixAgentTimeoutOutcome(issueDesc, strings.Join(leftover, " "), err)
 }
 
 // dirtyRunWorktree reports the run worktree path when the timed-out agent left
@@ -551,7 +568,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	if strings.TrimSpace(status) == "" {
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
-		if err == nil && headSHA != sctx.Run.HeadSHA {
+		if err == nil && ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
 		return ciRepairResult{}, nil
@@ -579,7 +596,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 		if err != nil {
 			return ciRepairResult{}, fmt.Errorf("resolve head after empty CI handoff: %w", err)
 		}
-		if headSHA != sctx.Run.HeadSHA {
+		if ciHeadAwaitsRecording(sctx, headSHA) {
 			return s.recordRepair(sctx, headSHA)
 		}
 		return ciRepairResult{}, nil
@@ -593,6 +610,19 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (ciRep
 	}
 
 	return s.recordRepair(sctx, headSHA)
+}
+
+// ciHeadAwaitsRecording reports whether a fix round that committed nothing
+// itself still has a head for recordRepair: one the agent committed, or a
+// repair already recorded locally but never published, such as the commit of a
+// fix agent that ran out of budget. Without the second case a later round that
+// adds nothing would leave that repair stranded behind the old published head.
+func ciHeadAwaitsRecording(sctx *pipeline.StepContext, headSHA string) bool {
+	if headSHA != sctx.Run.HeadSHA {
+		return true
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	return err == nil && run != nil && run.LastPushedSHA != nil && !strings.EqualFold(strings.TrimSpace(*run.LastPushedSHA), headSHA)
 }
 
 // ciRevalidatesRepairs reports whether this run must re-run the whole pipeline
@@ -785,10 +815,18 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if pr == nil {
 		return nil
 	}
-	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log); err != nil {
+	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
 	return nil
+}
+
+func attestationPolicyFrom(sctx *pipeline.StepContext) pipelineAttestationPolicy {
+	policy := pipelineAttestationPolicy{}
+	if sctx != nil && sctx.Config != nil {
+		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
+	}
+	return policy
 }
 
 // restampPRAttestation re-reads the current PR body, rewrites only the live
@@ -798,15 +836,16 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 // failed: missing-reader is not a settlement miss. All currently supported
 // providers have readers; this keeps the optional-interface fallback intact.
 func restampPRAttestation(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, logfn func(string)) error {
-	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn)
+	return restampPRAttestationWithSteps(ctx, host, pr, newHeadSHA, nil, logfn, pipelineAttestationPolicy{})
 }
 
 // restampPRAttestationWithSteps is restampPRAttestation with an explicit step
-// list. A nil steps keeps whatever statuses the existing attestation already
-// carried (rebindPipelineAttestationWithSteps' nil behavior); a non-nil steps
-// replaces them outright. See attestHeadBeforePush for why a caller picks
-// one over the other.
-func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string)) error {
+// list and the current trusted attestation policy. A nil steps keeps whatever
+// statuses the existing attestation already carried; a non-nil steps replaces
+// them outright. allow_test_command_override always comes from policy, never
+// from the previous attestation. See attestHeadBeforePush for why a caller
+// picks one steps argument over the other.
+func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.PR, newHeadSHA string, steps []*db.StepResult, logfn func(string), policy pipelineAttestationPolicy) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok || pr == nil {
 		if logfn != nil && !ok {
@@ -819,7 +858,7 @@ func restampPRAttestationWithSteps(ctx context.Context, host scm.Host, pr *scm.P
 	for attempt := 1; attempt <= attempts; attempt++ {
 		content, err := reader.GetPRContent(ctx, pr)
 		if err == nil {
-			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps)
+			updated, rebound, rebindErr := rebindOwnedPRAttestation(content.Body, newHeadSHA, steps, policy)
 			if rebindErr != nil {
 				return fmt.Errorf("rebind PR appendix: %w", rebindErr)
 			}
