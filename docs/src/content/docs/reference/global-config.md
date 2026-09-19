@@ -546,8 +546,17 @@ Raise it for repositories whose reviews legitimately run long; it bounds only th
 
 Maximum wall-clock time for one Test-step agent invocation.
 The budget covers the post-test evidence-gathering turn, and a Test-repair turn gets its own budget of the same length.
-When the deadline expires, the test agent is cancelled and the run fails with a diagnostic naming the timeout instead of remaining active indefinitely.
-That diagnostic carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
+When the deadline expires, the test agent is cancelled and the Test step parks for a decision with an ask-user finding rather than failing the run as a code defect.
+That finding carries the same measured evidence and adapter report described under [`agent_timeout`](#agent_timeout).
+A late structured result from the expired turn is still not used as a successful Test pass.
+The park keeps the configured `commands.test` result from the same execution, so approving over a failing command is still recorded as a configured-command override.
+A cut fix round also keeps the findings of the gate it was answering, selected or not, and the last completed evidence turn's verdict, so approving it is recorded against that verdict.
+A commit the timed-out agent already made is recorded locally for custody and is not pushed, unless an unfinished rebase or merge leaves only a partial HEAD.
+While the run worktree holds uncommitted changes or commits past the head the last completed evidence turn saw (before one completes, past the head the first cut measured from, which each later park carries forward and measures again), the park names them with the commands to inspect them and approval is refused, because the steps after Test would commit and publish them.
+Otherwise approving the park is a Test exception (`passed-with-override`), not a silent green pass.
+A fix response spends another budget: a repair turn runs only for selected findings other than the budget cut itself, then validation re-runs over whatever the cut left.
+Guidance you attach to the budget-cut finding itself (`axi respond --instructions`, or `e` in the TUI) is given to that re-run validation.
+You can also abort, raise this value, and retry.
 
 |         |                        |
 | ------- | ---------------------- |
@@ -556,7 +565,9 @@ That diagnostic carries the same measured evidence and adapter report described 
 
 Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
 Non-positive values are rejected when loading the global config.
-Raise it for repositories whose targeted tests or evidence gathering legitimately run long; it bounds only the Test step, and no other step or environment variable overrides it.
+Raise it for repositories whose targeted tests or evidence gathering legitimately run long; a suite that itself takes close to 30 minutes leaves almost no slack against provider slowness under the default.
+The shipped default stays a stall bound and is not raised automatically.
+It bounds only the Test step, and no other step or environment variable overrides it.
 
 ### daemon_connect_timeout
 
@@ -630,6 +641,45 @@ When resume is unavailable or fails, the fix turn falls back to a cold run or a 
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts; Pi's own session directory retains its native transcript. Keep Pi's session directory private, and keep any `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` setting stable while a run is active so a daemon restart can find the fixer session.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
+
+### jev
+
+Opt-in TypeSafe Jev pre-brief for review turns (issue #1055).
+
+|         |          |
+| ------- | -------- |
+| Type    | `object` |
+| Default | disabled |
+
+```yaml
+jev:
+  review_assist: false
+```
+
+| Field               | Type   | Default | Description                                       |
+| ------------------- | ------ | ------- | ------------------------------------------------- |
+| `jev.review_assist` | `bool` | `false` | Consult TypeSafe Jev before each review turn      |
+
+When enabled and [`TYPESAFE_API_KEY`](/no-mistakes/reference/environment/#typesafe_api_key) is set in the daemon's environment, each review turn - the initial review and every rereview - runs one batched Jev evaluation over a code-filtered digest of the change before the reviewer launches.
+The digest covers only the files the review covers, so paths matching `ignore_patterns` are left out.
+Its typed answers feed the review prompt one kind of advisory input: a ranked list of surrounding-context files worth reading first.
+The candidates Jev ranks are found in code: files that use the names the change defines, preferring files that use rare names over files that only share common ones, then same-directory siblings of the changed files.
+Paths matching `ignore_patterns` are never candidates.
+Jev's answer decides which candidates are listed: a candidate is listed when most of its probability mass sits at "relevant" or "essential" (a probability-weighted score threshold would demand near-certainty and never fires), and the order also weighs the code's evidence, so a file that uses a changed name is listed ahead of a same-directory sibling Jev scored the same.
+A follow-up operator-credentialed live TypeSafe run and off/on cold-review benchmark lives in `benchmarks/issue-1125/` (method, raw data, and conclusion).
+The original published method is in `benchmarks/issue-1055/`.
+
+The assist can only add to a review, never subtract.
+Complete-change coverage, the `reviewed_paths` contract, and every prompt obligation are exactly what they are with the assist off, no Jev answer can remove a file, a clause, or an obligation, and the reviewer stays a fresh, session-free invocation that never resumes the fixer session.
+Every failure mode - unset key, network or API error, undecodable answer - falls back to the same cold review with one log line.
+Jev answers are typed numbers, not generated text, so the service cannot inject prose into the review prompt.
+
+This setting is global-only: it does not exist in `.no-mistakes.yaml`, so a pushed branch cannot enable or steer the pre-screen that feeds the reviewer gating it.
+The request sent to TypeSafe carries the branch name, the base commit, the clipped diff and diff stat of the reviewable files, and the paths of up to 40 candidate files.
+It sends no content from unchanged files: candidates are paths only.
+The change content in it is a subset of what the review agent itself sends to its model provider, and the request leaves the machine only when you set both this flag and the key.
+The model is pinned (`jev-1.13.0`), and each request is billed per input token at [TypeSafe's published price](https://docs.typesafe.ai/models); output tokens are free.
+The local step log records how many candidates were listed, the answering model ID, and the input-token usage; none of it goes to telemetry.
 
 ### worktree_roots
 

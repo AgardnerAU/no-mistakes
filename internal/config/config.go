@@ -202,7 +202,12 @@ type GlobalConfig struct {
 	// this machine's local eval corpus (disk, retention, whether review rounds
 	// record replay provenance), never a repository policy. Keeping it out of
 	// RepoConfig means no pushed branch can enable, disable, or resize it.
-	Eval      Eval
+	Eval Eval
+	// Jev holds the resolved TypeSafe pre-brief settings (see the Jev type).
+	// Global-only for the same reason as Eval: it decides whether this
+	// machine's review turns consult an external pre-screen service under the
+	// operator's own key, so no pushed branch may enable or steer it.
+	Jev       Jev
 	Providers ProvidersRaw
 }
 
@@ -236,6 +241,7 @@ type globalConfigRaw struct {
 	Intent                  IntentRaw                  `yaml:"intent"`
 	Test                    TestRaw                    `yaml:"test"`
 	Eval                    EvalRaw                    `yaml:"eval"`
+	Jev                     JevRaw                     `yaml:"jev"`
 	ForgeProfiles           ForgeProfiles              `yaml:"forge_profiles"`
 	Providers               ProvidersRaw               `yaml:"providers"`
 }
@@ -672,7 +678,10 @@ type Config struct {
 	LogLevel              string
 	SessionReuse          bool
 	Eval                  Eval
-	Commands              Commands
+	// Jev is global-only by design (see GlobalConfig.Jev); Merge copies it
+	// straight through with no repository override step.
+	Jev      Jev
+	Commands Commands
 	// Gates are the repository's extra checks, already trusted-only by the
 	// time they reach here (EffectiveRepoConfig sourced them from the trusted
 	// default-branch copy).
@@ -918,6 +927,23 @@ type Eval struct {
 	DiversifiedSize int
 }
 
+// JevRaw is the YAML representation of the TypeSafe review pre-brief
+// settings. Pointer fields distinguish "not set" (nil) from explicit values.
+type JevRaw struct {
+	ReviewAssist *bool `yaml:"review_assist"`
+}
+
+// Jev is the resolved TypeSafe pre-brief config. ReviewAssist opts review
+// turns into one batched Jev evaluation that ranks surrounding context as
+// advisory prompt input (issue #1055). It never
+// changes what a review covers or who validates it, and every failure of the
+// assist falls back to the same cold review that runs with it off. The API
+// key is read from the daemon's TYPESAFE_API_KEY environment variable at turn
+// time, never from this document.
+type Jev struct {
+	ReviewAssist bool
+}
+
 // IntentRaw is the YAML representation of user-intent extraction settings.
 // Pointer fields distinguish "not set" (nil) from explicit zero/false values.
 type IntentRaw struct {
@@ -1054,8 +1080,10 @@ agent_timeout: "30m"
 review_agent_timeout: "30m"
 
 # Maximum wall-clock time for one Test-step agent invocation, including the
-# post-test evidence-gathering turn. A stalled test agent fails the run instead
-# of leaving it active.
+# post-test evidence-gathering turn. A stalled test agent parks for a decision
+# instead of leaving the run active. Raise this when targeted tests or evidence
+# gathering routinely approach 30m; the default is a stall bound, not slack
+# for a long suite.
 test_agent_timeout: "30m"
 
 # Maximum time a CLI client waits for an existing daemon socket to accept a
@@ -1909,6 +1937,7 @@ func DefaultGlobalConfig() *GlobalConfig {
 		LogLevel:                "info",
 		SessionReuse:            true,
 		Eval:                    evalDefaults(),
+		Jev:                     Jev{},
 	}
 }
 
@@ -2217,6 +2246,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg.Test = raw.Test
 	cfg.Providers = raw.Providers
 	applyEvalOverrides(&cfg.Eval, &raw.Eval)
+	applyJevOverrides(&cfg.Jev, &raw.Jev)
 
 	return cfg, nil
 }
@@ -2767,6 +2797,13 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 	}
 }
 
+// applyJevOverrides applies non-nil raw values onto resolved defaults.
+func applyJevOverrides(dst *Jev, src *JevRaw) {
+	if src.ReviewAssist != nil {
+		dst.ReviewAssist = *src.ReviewAssist
+	}
+}
+
 // validateEvalRaw fails the config closed on a negative eval.max_cases. A
 // negative cap has no defensible meaning here - it is neither "keep everything"
 // (0) nor a bound - so surfacing the typo beats guessing which one was meant.
@@ -3110,7 +3147,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		SessionReuse:          global.SessionReuse,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
-		Eval:           global.Eval,
+		Eval: global.Eval,
+		// Jev is global-only for the same reason as Eval.
+		Jev:            global.Jev,
 		Commands:       repo.Commands,
 		Gates:          copyGates(repo.Gates),
 		IgnorePatterns: repo.IgnorePatterns,
