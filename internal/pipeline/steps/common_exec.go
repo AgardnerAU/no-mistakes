@@ -317,7 +317,7 @@ func runShellCommandWithProcessEnv(ctx context.Context, dir string, env []string
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	}
-	shellenv.ConfigureShellCommand(cmd)
+	shellenv.ConfigureCooperativeShellCommand(cmd)
 	cmd.Dir = dir
 	if env != nil {
 		cmd.Env = env
