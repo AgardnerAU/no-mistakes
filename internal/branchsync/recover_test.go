@@ -2901,14 +2901,36 @@ func TestAdoptPublishedFetchHonorsTheRemoteTimeout(t *testing.T) {
 // bound must be a real per-operation budget, not a cap that makes an ordinary
 // adoption fail. Both ls-remote calls burn most of a generous timeout, and the
 // fetch still gets its own fresh budget and completes.
+//
+// The budget has to clear the cost of the one real network operation left in
+// the path: FetchRemoteRef spawns `git fetch` and then `git rev-parse`. That
+// pair costs ~50ms on Linux and macOS but roughly 10x that on the Windows leg,
+// which is process-spawn bound rather than compute bound (see AGENTS.md). A
+// sub-second budget sits on top of the Windows cost with no margin and fails
+// there as soon as anything perturbs spawn latency, so the budget is kept a
+// whole multiple of the slowest platform's cost.
+//
+// The stub honors its own context rather than sleeping through it, which is
+// what gives this test teeth on every platform. A stub that always succeeds can
+// only report a shared deadline by way of the fetch being starved, and how much
+// of the budget is left for that fetch has to be read against a per-platform
+// spawn cost - so such a stub silently stops detecting the regression wherever
+// the fetch happens to be quick enough to squeeze in. Honoring the context
+// instead makes the SECOND ls-remote the witness: on one shared deadline the
+// first call consumes most of it and the second is left with far less than it
+// needs, failing the adoption regardless of how fast git is on the platform.
 func TestAdoptPublishedFetchSucceedsWithinItsOwnBudget(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	rebased := publishedRebaseAfterCustody(t, f)
 
-	f.service.RemoteTimeout = 400 * time.Millisecond
+	f.service.RemoteTimeout = 3 * time.Second
 	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
-		time.Sleep(300 * time.Millisecond)
-		return rebased, nil
+		select {
+		case <-time.After(2500 * time.Millisecond):
+			return rebased, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 
 	state := f.service.AdoptPublished(f.ctx)
