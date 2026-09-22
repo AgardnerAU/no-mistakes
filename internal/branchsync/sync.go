@@ -1396,7 +1396,12 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_gate_changed", "the gate lane no longer matches the recovered pipeline head; no files or gate refs were changed")
 	}
 
-	pushURL := s.resolvedPushURL(ctx)
+	repo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || repo == nil {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_target_unavailable", "the configured push target is unavailable; no files or gate refs were changed")
+	}
+	pushTargetFingerprint := TargetFingerprint(repo.PushURL())
+	pushURL := s.resolvedPushURL(ctx, repo)
 	if strings.TrimSpace(pushURL) == "" {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_target_unavailable", "the configured push target is unavailable; no files or gate refs were changed")
 	}
@@ -1445,6 +1450,10 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 	if err := custody.PreserveRecoveryHead(ctx, s.GateDir, run.ID, gateHead); err != nil {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_preserve_failed", "the recovered gate head could not be preserved before lane adoption; no files or gate refs were changed")
 	}
+	currentRepo, err := s.DB.GetRepo(s.Repo.ID)
+	if err != nil || currentRepo == nil || TargetFingerprint(currentRepo.PushURL()) != pushTargetFingerprint {
+		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_target_changed", "the configured push target changed while the published head was being verified; no files or gate refs were changed")
+	}
 	if _, err := git.Run(ctx, s.GateDir, "update-ref", branchRef, state.Local.Head, gateHead); err != nil {
 		return blockedPlan(state, StateCustodyReturned, "blocked_adopt_published_gate_race", "the gate lane changed while the published head was being adopted; the lane was not replaced and the recovered head remains preserved")
 	}
@@ -1459,22 +1468,26 @@ func (s *Service) AdoptPublished(ctx context.Context) State {
 // registered upstream. Adoption's whole safety argument is that the head it
 // admits is already published on THAT target, so a worktree remote may stand in
 // for it only to recover a credential the redacted database copy cannot hold,
-// and only when remoteName has proven the remote is the same target by
-// credential-free TargetFingerprint identity. A worktree whose origin points
+// and only when credential-free TargetFingerprint identity proves that the
+// remote is the same target. A worktree whose origin points
 // somewhere else therefore never decides the adoption; the registered target
 // does, and an unusable credential fails the live check closed rather than
 // verifying against a remote the pipeline does not publish to.
-func (s *Service) resolvedPushURL(ctx context.Context) string {
-	target := s.Repo.PushURL()
+func (s *Service) resolvedPushURL(ctx context.Context, repo *db.Repo) string {
+	target := repo.PushURL()
 	if strings.TrimSpace(target) == "" {
 		return ""
 	}
-	name := s.remoteName(ctx)
-	credentialled, err := git.GetConfiguredRemoteURL(ctx, s.workDir(), name)
-	if err != nil || strings.TrimSpace(credentialled) == "" || TargetFingerprint(credentialled) != TargetFingerprint(target) {
-		return target
+	remotes, err := git.Run(ctx, s.workDir(), "remote")
+	if err == nil {
+		for _, name := range strings.Fields(remotes) {
+			credentialled, err := git.GetConfiguredRemoteURL(ctx, s.workDir(), name)
+			if err == nil && strings.TrimSpace(credentialled) != "" && TargetFingerprint(credentialled) == TargetFingerprint(target) {
+				return credentialled
+			}
+		}
 	}
-	return credentialled
+	return target
 }
 
 func recoverAnchorRef(runID string) string {

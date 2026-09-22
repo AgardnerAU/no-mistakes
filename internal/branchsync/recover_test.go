@@ -2941,3 +2941,48 @@ func TestAdoptPublishedFetchSucceedsWithinItsOwnBudget(t *testing.T) {
 		t.Fatalf("gate lane = %s, want the published rebased head %s", got, rebased)
 	}
 }
+
+func TestAdoptPublishedRefusesReplacedPushTarget(t *testing.T) {
+	t.Run("before adoption", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		publishedRebaseAfterCustody(t, f)
+		replacement := filepath.Join(t.TempDir(), "replacement.git")
+		mustRun(t, filepath.Dir(replacement), "init", "--bare", replacement)
+		if _, err := f.db.ReplaceRepoURLs(f.repo.ID, replacement, ""); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.AdoptPublished(f.ctx)
+		if state.Changed || state.Safety != "blocked_published_head_mismatch" {
+			t.Fatalf("adoption did not refuse the replacement target: %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
+		}
+	})
+
+	t.Run("during verification", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		rebased := publishedRebaseAfterCustody(t, f)
+		replacement := filepath.Join(t.TempDir(), "replacement.git")
+		mustRun(t, filepath.Dir(replacement), "init", "--bare", replacement)
+		checks := 0
+		f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+			checks++
+			if checks == 2 {
+				if _, err := f.db.ReplaceRepoURLs(f.repo.ID, replacement, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return rebased, nil
+		}
+
+		state := f.service.AdoptPublished(f.ctx)
+		if state.Changed || state.Safety != "blocked_adopt_published_target_changed" {
+			t.Fatalf("adoption did not refuse the concurrently replaced target: %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("gate lane = %s, want the untouched pre-rebase head %s", got, f.preserved)
+		}
+	})
+}
