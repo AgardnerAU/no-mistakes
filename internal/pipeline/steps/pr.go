@@ -104,7 +104,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	baseSHA, err := resolveBranchBaseSHA(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+	if err != nil {
+		return nil, err
+	}
 	bodyLimit := scm.MaxPRBodyChars(provider)
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
@@ -448,6 +451,7 @@ Final diff paths and statuses:
 %s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, titleRules, scopeRules, diffStat, finalDiff, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
+	prompt += agent.MemoryFilesRule
 
 	result, err := sctx.RunAgentContext(ctx, agent.RunOpts{
 		Prompt:     prompt,
@@ -512,6 +516,7 @@ Rules:
 
 Final diff paths and statuses:
 %s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, paths, prDraftIntentPromptSection(sctx), executionContextPromptSection(sctx.WorkDir))
+	prompt += agent.MemoryFilesRule
 	result, err := sctx.RunAgentContext(sctx.Ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
