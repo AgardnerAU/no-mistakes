@@ -19,22 +19,21 @@ func ciConfig(sctx *pipeline.StepContext) config.CI {
 	return sctx.Config.CI
 }
 
-// splitDecisionChecks separates checks that the maintainer reserved for a human.
-func splitDecisionChecks(names []string, cfg config.CI) (decision, repairable []string) {
-	for _, name := range names {
-		if cfg.MatchesDecisionCheck(name) {
-			decision = append(decision, name)
-		} else {
-			repairable = append(repairable, name)
-		}
+func ciDecisionCheckFinding(name, checkID string) Finding {
+	return Finding{
+		Severity:    types.FindingSeverityError,
+		Action:      types.ActionAskUser,
+		Category:    types.FindingCategoryCICheck,
+		Check:       name,
+		CheckID:     checkID,
+		Description: fmt.Sprintf("CI check failing: %s. This repository declares it in ci.decision_checks, which means its red state is a statement that a human decision is outstanding, not that something is broken. No fix round is run for it and none can be requested.", name),
 	}
-	return decision, repairable
 }
 
 func ciDecisionCheckOutcome(names []string) *pipeline.StepOutcome {
 	findings := Findings{Summary: "CI checks that require a human decision are failing"}
 	for _, name := range names {
-		findings.Items = append(findings.Items, Finding{Severity: "blocking", Description: fmt.Sprintf("CI check failing: %s. This repository declares it in ci.decision_checks, which means its red state is a statement that a human decision is outstanding, not that something is broken. No fix round is run for it and none can be requested.", name), Action: types.ActionAskUser})
+		findings.Items = append(findings.Items, ciDecisionCheckFinding(name, ""))
 	}
 	encoded, _ := json.Marshal(findings)
 	return &pipeline.StepOutcome{NeedsApproval: true, Findings: string(encoded)}

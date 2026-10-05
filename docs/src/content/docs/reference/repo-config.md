@@ -721,9 +721,9 @@ Green is worse than the red it replaced, because red is visible.
 
 A check named here leaves the fix agent's reach entirely:
 
-- It is never offered as a fix target, and its logs never reach the fix prompt.
-- When it fails, the run parks at an ask-user gate naming it, before any fix round runs.
-- That gate deliberately offers no fix round, and re-parks even if you answer it with a fix selection. The declaration is your standing decision about the check, recorded on your own default branch; a run-time answer, which any agent driving the pipeline can give, must not dissolve it. Resolve the check outside the pipeline, or approve or skip to let the run finish with the check still red.
+- It is never offered as a fix target, and its logs never reach the fix prompt. A fix selection that includes it repairs only the other selected findings.
+- When it fails, it becomes an ask-user finding naming it. Ordinary failures in the same observation stay on the gate beside it as auto-fix findings, so they still get fix rounds; the run then parks on the decision check.
+- That finding deliberately offers no fix round, and a fix selection of nothing but decision checks re-parks. The declaration is your standing decision about the check, recorded on your own default branch; a run-time answer, which any agent driving the pipeline can give, must not dissolve it. Resolve the check outside the pipeline, or approve or skip to let the run finish with the check still red.
 
 Patterns are shell globs, matched case-insensitively against the provider's check name, with `*` free to cross the `/` a forge puts between a workflow and its job (`"workflow pin*"` covers `Workflow pin / verify (pull_request)`).
 An unmatchable pattern fails this file at load time rather than silently leaving the check it names inside the fix agent's reach.

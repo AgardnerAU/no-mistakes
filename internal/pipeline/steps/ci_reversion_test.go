@@ -845,3 +845,22 @@ func commitRepairForTest(step *CIStep, sctx *pipeline.StepContext, summary strin
 	repair, err := step.commitRepair(sctx, summary, nil)
 	return repair.HeadAdvanced, err
 }
+
+// TestCIFixReversionOutcomeIsLeftToAPerson ties the gate the step emits to the
+// one predicate every automatic resolver stands aside on, because a fix
+// response there authorises the exact reversion.
+func TestCIFixReversionOutcomeIsLeftToAPerson(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{Log: func(string) {}, WorkDir: t.TempDir()}
+	refusal := newReversionRefusal([]reversionEvidence{{Path: "guard.sh", Kind: reversionRestoredFile}})
+	outcome := ciFixReversionOutcome(sctx, "build", fmt.Errorf("commit repair: %w", refusal))
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("a refused repair must park, got %+v", outcome)
+	}
+	if !pipeline.HasDecisionReversionRefusal(outcome.Findings) {
+		t.Fatalf("automatic resolvers cannot recognise the reversion gate: %s", outcome.Findings)
+	}
+	if pipeline.HasDecisionReversionRefusal(ciDecisionCheckOutcome([]string{"build"}).Findings) {
+		t.Fatal("an ordinary decision-check gate was treated as a reversion refusal")
+	}
+}

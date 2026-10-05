@@ -134,3 +134,121 @@ func TestCIStep_DecisionCheckStaysUnfixableUnderAnExplicitFixRequest(t *testing.
 		t.Fatalf("the fix agent ran for a decision check under an explicit fix request (%d invocations)", len(ag.Calls))
 	}
 }
+
+// TestCIStep_DecisionCheckBesideABuildFailureKeepsTheBuildRepairable stops a
+// declared decision check from hiding the ordinary failures that share its
+// observation: the build failure stays on the gate as auto-fix work, and the
+// decision check stays beside it as the person's question.
+func TestCIStep_DecisionCheckBesideABuildFailureKeepsTheBuildRepairable(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	checks := `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"},` +
+		`{"name":"Workflow pin","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"}]`
+	env, _ := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{checks, checks, checks}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/2891"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{DecisionChecks: []string{"Workflow pin"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		polls++
+		if polls >= 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an observation outcome, got error: %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval || !outcome.AutoFixable {
+		t.Fatalf("the build failure must stay auto-fixable beside the decision check, got %+v", outcome)
+	}
+	if len(ag.Calls) != 0 {
+		t.Fatalf("the step ran the fix agent itself (%d invocations)", len(ag.Calls))
+	}
+
+	var findings types.Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	actions := map[string]string{}
+	for _, item := range findings.Items {
+		actions[item.Check] = item.Action
+	}
+	if len(findings.Items) != 2 || actions["build"] != types.ActionAutoFix || actions["Workflow pin"] != types.ActionAskUser {
+		t.Fatalf("findings = %+v, want build as auto-fix and Workflow pin as ask-user", findings.Items)
+	}
+}
+
+// TestCIStep_FixRoundRepairsTheBuildButNeverShowsTheAgentTheDecisionCheck
+// keeps decision checks outside the fix agent by excluding them from its
+// targets, so a fix response that selects both still repairs the build.
+func TestCIStep_FixRoundRepairsTheBuildButNeverShowsTheAgentTheDecisionCheck(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	checks := `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"},` +
+		`{"name":"Workflow pin","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"}]`
+	env, _ := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{checks, checks, checks}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/2891"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{DecisionChecks: []string{"Workflow pin"}}
+
+	selected, err := json.Marshal(types.Findings{Items: []types.Finding{
+		{Severity: types.FindingSeverityError, Action: types.ActionAutoFix, Category: types.FindingCategoryCICheck, Check: "build", Description: "CI check failing: build"},
+		{Severity: types.FindingSeverityError, Action: types.ActionAskUser, Category: types.FindingCategoryCICheck, Check: "Workflow pin", Description: "CI check failing: Workflow pin"},
+	}})
+	if err != nil {
+		t.Fatalf("marshal selected findings: %v", err)
+	}
+	sctx.Fixing = true
+	sctx.PreviousFindings = string(selected)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		polls++
+		if polls >= 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	_, _ = step.Execute(sctx)
+
+	if len(ag.Calls) == 0 {
+		t.Fatal("a decision check beside a build failure refused the whole fix round")
+	}
+	for _, call := range ag.Calls {
+		if !strings.Contains(call.Prompt, "build") {
+			t.Fatalf("the fix agent was not asked to repair the build: %s", call.Prompt)
+		}
+		if strings.Contains(call.Prompt, "Workflow pin") {
+			t.Fatalf("the fix agent was shown the decision check: %s", call.Prompt)
+		}
+	}
+}

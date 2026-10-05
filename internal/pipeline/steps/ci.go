@@ -693,11 +693,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					s.lastFixedCompletedAt = nil
 					sctx.DeferredFindings = ""
 					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
-					decisionChecks, _ := splitDecisionChecks(failing, ciConfig(sctx))
-					if len(decisionChecks) > 0 {
-						sctx.Log(fmt.Sprintf("issues detected: %s - declared as requiring a human decision, parking without a fix round...", strings.Join(decisionChecks, ", ")))
-						return ciDecisionCheckOutcome(decisionChecks), nil
-					}
 					findings := ciObservationFindings(ciIssues{
 						checks:              checks,
 						failing:             failing,
@@ -705,6 +700,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						mergeConflict:       mergeConflict,
 						reruns:              s.transientReruns.used,
 						botComments:         reviewBotComments(sctx, host, pr, checks),
+						decisionCheck:       ciConfig(sctx).MatchesDecisionCheck,
 					})
 					if hasAwaitingApprovalChecks(checks) {
 						sctx.Log(ciChecksAwaitingApprovalMsg)

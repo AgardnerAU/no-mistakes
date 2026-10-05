@@ -600,6 +600,7 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 	findings := Findings{
 		Summary: "CI auto-fix round would undo the branch's own work",
 		Items: []Finding{{
+			ID:          types.FindingIDCIDecisionReversion,
 			Severity:    "blocking",
 			Description: description,
 			Action:      types.ActionAskUser,

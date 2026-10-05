@@ -78,14 +78,13 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
-	decisionChecks := make([]string, 0)
-	for _, target := range targets.Checks {
-		if ciConfig(sctx).MatchesDecisionCheck(target.Name) {
-			decisionChecks = append(decisionChecks, target.Name)
-		}
-	}
+	selected := targets.Findings
+	targets, decisionChecks := targets.withoutDecisionChecks(ciConfig(sctx))
 	if len(decisionChecks) > 0 {
-		return ciDecisionCheckOutcome(decisionChecks), nil
+		if targets.empty() {
+			return ciDecisionCheckOutcome(decisionChecks), nil
+		}
+		sctx.Log(fmt.Sprintf("leaving %s to a human decision, repairing the rest...", strings.Join(decisionChecks, ", ")))
 	}
 	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
@@ -110,14 +109,14 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	fixCompletedAt := completionTimesForTargets(s.observedCompletedAt, targets.Checks)
 	repair, err := s.autoFixCI(sctx, host, pr, targets)
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
-		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
+		return ciTerminalRepairOutcome(outcome, selected, sctx.DeferredFindings), nil
 	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
-		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
+		return ciTerminalRepairOutcome(outcome, selected, sctx.DeferredFindings), nil
 	}
 	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
 		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
-		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
+		return ciRepairParkOutcome(selected, sctx.DeferredFindings, err.Error()), nil
 	}
 	if err != nil {
 		// An ordinary fix failure is cheap to repeat and often works the next
@@ -156,7 +155,7 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	}
 	if repair.NoCodeChangeNeeded {
 		sctx.Log(fmt.Sprintf("CI fixer concluded no code change is needed: %s", repair.Summary))
-		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, repair.Summary), nil
+		return ciRepairParkOutcome(selected, sctx.DeferredFindings, repair.Summary), nil
 	}
 	sctx.Log("CI fix produced no changes, resuming monitoring...")
 	return nil, nil
