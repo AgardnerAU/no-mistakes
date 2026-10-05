@@ -78,6 +78,15 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 		sctx.Log("fix requested with no CI findings to repair, resuming monitoring...")
 		return nil, nil
 	}
+	decisionChecks := make([]string, 0)
+	for _, target := range targets.Checks {
+		if ciConfig(sctx).MatchesDecisionCheck(target.Name) {
+			decisionChecks = append(decisionChecks, target.Name)
+		}
+	}
+	if len(decisionChecks) > 0 {
+		return ciDecisionCheckOutcome(decisionChecks), nil
+	}
 	if len(targets.Checks) > 0 && s.observedCompletedAt == nil {
 		expectedHeadSHA, err := stepGitHeadSHA(sctx)
 		if err != nil {

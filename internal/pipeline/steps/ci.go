@@ -58,8 +58,8 @@ type CIStep struct {
 	transientReruns      checkRerunBudget // per-check rerun budget spent on provider-reported transient failures
 	// authorizedRefusal is the exact decision-reversion refusal last shown at a gate.
 	// It is process-local so a restart cannot inherit a decision nobody saw here.
-	authorizedRefusal *decisionReversionError
-	pollIntervalOverride time.Duration    // if set, overrides computed poll interval (for testing)
+	authorizedRefusal    *decisionReversionError
+	pollIntervalOverride time.Duration // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
 	// baseBranchTip resolves the current tip SHA of the upstream default
@@ -693,6 +693,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 					s.lastFixedCompletedAt = nil
 					sctx.DeferredFindings = ""
 					s.observedCompletedAt = terminalFailureCompletionTimes(checks)
+					decisionChecks, _ := splitDecisionChecks(failing, ciConfig(sctx))
+					if len(decisionChecks) > 0 {
+						sctx.Log(fmt.Sprintf("issues detected: %s - declared as requiring a human decision, parking without a fix round...", strings.Join(decisionChecks, ", ")))
+						return ciDecisionCheckOutcome(decisionChecks), nil
+					}
 					findings := ciObservationFindings(ciIssues{
 						checks:              checks,
 						failing:             failing,

@@ -141,7 +141,7 @@ func TestCIRepair_RefusesToUndoAReviewedWorkflowApproval(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
-	changed, err := step.commitRepair(sctx, "restore workflow pin")
+	changed, err := commitRepairForTest(step, sctx, "restore workflow pin")
 	if err == nil {
 		t.Fatalf("CI repair committed a reversion of the branch's reviewed approval (changed=%v, head now %s): "+
 			"the workflow-fingerprint store and SKILL.md are byte-identical to base %s while "+
@@ -243,7 +243,7 @@ func TestCIRepair_RefusesToReinstateContentADecisionRemoved(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "refs.go"), "package refs\n\n"+needleClosure+"\nfunc route() {}\n\nfunc TestNeedles() {}\n")
 
 	step := &CIStep{}
-	changed, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "restore needle expansion")
+	changed, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "restore needle expansion")
 	if err == nil {
 		t.Fatalf("CI repair reinstated content a recorded decision removed (changed=%v)", changed)
 	}
@@ -270,7 +270,7 @@ func TestCIRepair_AllowsAnOrdinaryRepairOfTheBranchsOwnCode(t *testing.T) {
 		"package p\n\nfunc TestA(t *testing.T) {}\n\nfunc TestB(t *testing.T) {\n\twant := filepath.Join(\"a\", \"b\")\n}\n")
 
 	step := &CIStep{}
-	changed, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "make the path test cross-platform")
+	changed, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "make the path test cross-platform")
 	if err != nil {
 		t.Fatalf("ordinary CI repair was refused: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestCIRepair_AllowsRepairsThatOnlyAddNewContent(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "run_test.go"), "package main\n\nfunc TestRun() { run() }\n")
 
 	step := &CIStep{}
-	if _, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "add the missing import"); err != nil {
+	if _, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "add the missing import"); err != nil {
 		t.Fatalf("additive CI repair was refused: %v", err)
 	}
 }
@@ -309,7 +309,7 @@ func TestCIRepair_RefusesToDeleteAFileTheBranchAdded(t *testing.T) {
 	}
 
 	step := &CIStep{}
-	_, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "drop the failing feature")
+	_, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "drop the failing feature")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want a decision-reversion refusal", err)
@@ -329,13 +329,13 @@ func TestCIRepair_AuthorisedFixCommitsTheReversionThePersonSaw(t *testing.T) {
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+	if _, err := commitRepairForTest(step, sctx, "restore workflow pin"); err == nil {
 		t.Fatal("the first round must refuse and show the evidence")
 	}
 
 	// The person answers that gate with a fix selection.
 	sctx.Fixing = true
-	changed, err := step.commitRepair(sctx, "restore workflow pin")
+	changed, err := commitRepairForTest(step, sctx, "restore workflow pin")
 	if err != nil {
 		t.Fatalf("the authorised reversion was still refused: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestCIRepair_FixResponseDoesNotAuthoriseADifferentReversion(t *testing.T) {
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	shown, err := step.commitRepair(sctx, "restore workflow pin")
+	shown, err := commitRepairForTest(step, sctx, "restore workflow pin")
 	if err == nil {
 		t.Fatalf("the first round must refuse (changed=%v)", shown)
 	}
@@ -370,7 +370,7 @@ func TestCIRepair_FixResponseDoesNotAuthoriseADifferentReversion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := step.commitRepair(sctx, "restore workflow pin")
+	changed, err := commitRepairForTest(step, sctx, "restore workflow pin")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v (changed=%v), want a refusal: the fix response authorised a different repair", err, changed)
@@ -396,7 +396,7 @@ func TestCIRepair_NarrowerReplacementRoundIsShownAgain(t *testing.T) {
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+	if _, err := commitRepairForTest(step, sctx, "restore workflow pin"); err == nil {
 		t.Fatal("the first round must refuse and show the evidence")
 	}
 
@@ -405,7 +405,7 @@ func TestCIRepair_NarrowerReplacementRoundIsShownAgain(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "SKILL.md"), skillMD([]string{
 		"build", "deploy", "lint", "release", "test", "wiki-sync", "wiki-drift-monitor",
 	}))
-	_, err := step.commitRepair(sctx, "restore workflow pin")
+	_, err := commitRepairForTest(step, sctx, "restore workflow pin")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want the narrowed repair shown as its own refusal", err)
@@ -414,7 +414,7 @@ func TestCIRepair_NarrowerReplacementRoundIsShownAgain(t *testing.T) {
 		t.Errorf("the refusal should now cover only the store: %s", reversion.Error())
 	}
 	// Answering that gate commits it: the person is deciding on what they read.
-	if _, err := step.commitRepair(sctx, "restore workflow pin"); err != nil {
+	if _, err := commitRepairForTest(step, sctx, "restore workflow pin"); err != nil {
 		t.Fatalf("the freshly authorised repair was refused: %v", err)
 	}
 }
@@ -437,7 +437,7 @@ func TestCIRepair_UnevaluableGuardFailsClosed(t *testing.T) {
 	sctx.Run.BaseSHA = "0123456789012345678901234567890123456789"
 
 	step := &CIStep{}
-	_, err := step.commitRepair(sctx, "add logging")
+	_, err := commitRepairForTest(step, sctx, "add logging")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want a fail-closed refusal", err)
@@ -469,7 +469,7 @@ func TestCIRepair_IgnoresFilesTheBranchNeverTouched(t *testing.T) {
 		"package main\n\nfunc helperThatIsUniqueInBase() {}\n\nfunc added() {}\n")
 
 	step := &CIStep{}
-	if _, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "extend the helper"); err != nil {
+	if _, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "extend the helper"); err != nil {
 		t.Fatalf("a repair to a file the branch never touched was refused: %v", err)
 	}
 }
@@ -509,7 +509,7 @@ func TestCIRepair_RefusesAReversionTheFixAgentCommittedItself(t *testing.T) {
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	changed, err := step.commitRepair(sctx, "")
+	changed, err := commitRepairForTest(step, sctx, "")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v (changed=%v), want a decision-reversion refusal for the agent's own commit %s", err, changed, agentHead)
@@ -539,7 +539,7 @@ func TestCIRepair_RestoredFileIsDetectedThroughACheckoutFilter(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "policy.txt"), "alpha\r\nbravo\r\ncharlie\r\n")
 
 	step := &CIStep{}
-	_, err := step.commitRepair(repairContext(t, dir, baseSHA, headSHA), "revert the policy line")
+	_, err := commitRepairForTest(step, repairContext(t, dir, baseSHA, headSHA), "revert the policy line")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want a decision-reversion refusal despite the checkout filter", err)
@@ -570,7 +570,7 @@ func TestCIFixPrompt_CarriesRecordedDecisionsAndTheNonReversionRule(t *testing.T
 
 	step := &CIStep{}
 	host := &recordingDecisionHost{}
-	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, []string{"build"}, false); err != nil {
+	if _, err := step.autoFixCI(sctx, host, &scm.PR{Number: "1"}, ciFixTargets{Checks: []scm.CheckTarget{{Name: "build"}}}); err != nil {
 		t.Fatalf("autoFixCI: %v", err)
 	}
 	if len(prompts) != 1 {
@@ -746,11 +746,11 @@ func TestCIRepair_AuthorisationIsSpentOnUse(t *testing.T) {
 
 	sctx := repairContext(t, dir, baseSHA, headSHA)
 	step := &CIStep{}
-	if _, err := step.commitRepair(sctx, "restore workflow pin"); err == nil {
+	if _, err := commitRepairForTest(step, sctx, "restore workflow pin"); err == nil {
 		t.Fatal("the first round must refuse")
 	}
 	sctx.Fixing = true
-	if _, err := step.commitRepair(sctx, "restore workflow pin"); err != nil {
+	if _, err := commitRepairForTest(step, sctx, "restore workflow pin"); err != nil {
 		t.Fatalf("the authorised round was refused: %v", err)
 	}
 	if step.authorizedRefusal != nil {
@@ -763,7 +763,7 @@ func TestCIRepair_AuthorisationIsSpentOnUse(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, ".github", "workflows", "wiki-drift-monitor.yml")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := step.commitRepair(sctx, "another repair")
+	_, err := commitRepairForTest(step, sctx, "another repair")
 	var reversion *decisionReversionError
 	if !errors.As(err, &reversion) {
 		t.Fatalf("commitRepair error = %v, want a fresh refusal rather than an inherited authorisation", err)
@@ -839,4 +839,9 @@ func TestReversionEvidenceKeepsWhitespaceOutOfTheIdentityCollapse(t *testing.T) 
 	if !clamped.truncated || clamped.authorizes(clamped) {
 		t.Error("a clamped line must mark the refusal truncated and authorise nothing")
 	}
+}
+
+func commitRepairForTest(step *CIStep, sctx *pipeline.StepContext, summary string) (bool, error) {
+	repair, err := step.commitRepair(sctx, summary, nil)
+	return repair.HeadAdvanced, err
 }
