@@ -843,6 +843,7 @@ func TestReversionEvidenceKeepsWhitespaceOutOfTheIdentityCollapse(t *testing.T) 
 
 func commitRepairForTest(step *CIStep, sctx *pipeline.StepContext, summary string) (bool, error) {
 	repair, err := step.commitRepair(sctx, summary, nil)
+	step.ciFixReversionOutcome(sctx, summary, err)
 	return repair.HeadAdvanced, err
 }
 
@@ -853,7 +854,7 @@ func TestCIFixReversionOutcomeIsLeftToAPerson(t *testing.T) {
 	t.Parallel()
 	sctx := &pipeline.StepContext{Log: func(string) {}, WorkDir: t.TempDir()}
 	refusal := newReversionRefusal([]reversionEvidence{{Path: "guard.sh", Kind: reversionRestoredFile}})
-	outcome := ciFixReversionOutcome(sctx, "build", fmt.Errorf("commit repair: %w", refusal))
+	outcome := (&CIStep{}).ciFixReversionOutcome(sctx, "build", fmt.Errorf("commit repair: %w", refusal))
 	if outcome == nil || !outcome.NeedsApproval {
 		t.Fatalf("a refused repair must park, got %+v", outcome)
 	}

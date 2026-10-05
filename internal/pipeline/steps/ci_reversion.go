@@ -579,8 +579,9 @@ func worktreeFileContent(workDir, path string) (string, bool, error) {
 
 // ciFixReversionOutcome converts a refused repair into a bounded ask-user gate,
 // and returns nil for every other result so ordinary fix failures keep their
-// existing warn-and-retry behaviour.
-func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
+// existing warn-and-retry behaviour. Emitting the gate is the only place the
+// refusal becomes authorisable, because it is the refusal this gate shows.
+func (s *CIStep) ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err error) *pipeline.StepOutcome {
 	var reversion *decisionReversionError
 	if err == nil || !errors.As(err, &reversion) {
 		return nil
@@ -607,6 +608,7 @@ func ciFixReversionOutcome(sctx *pipeline.StepContext, issueDesc string, err err
 		}},
 	}
 	findingsJSON, _ := json.Marshal(findings)
+	s.authorizedRefusal = reversion
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
 		Findings:      string(findingsJSON),

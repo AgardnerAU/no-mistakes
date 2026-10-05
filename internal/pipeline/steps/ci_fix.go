@@ -111,6 +111,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if outcome := pipeline.ProtectedPathOutcome(err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, selected, sctx.DeferredFindings), nil
 	}
+	if outcome := s.ciFixReversionOutcome(sctx, issueDesc, err); outcome != nil {
+		return ciTerminalRepairOutcome(outcome, selected, sctx.DeferredFindings), nil
+	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, selected, sctx.DeferredFindings), nil
 	}
@@ -597,7 +600,7 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, produc
 	}
 	if refusal != nil {
 		if !sctx.Fixing || !s.authorizedRefusal.authorizes(refusal) {
-			s.authorizedRefusal = refusal
+			s.authorizedRefusal = nil
 			return ciRepairResult{}, refusal
 		}
 		// Spent on use. The person authorised the round they were looking at,

@@ -263,6 +263,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// this re-entry is the retry of a retained repair a protected-path refusal
 	// interrupted: that repair is finished first and nothing new is requested.
 	repairRequested := sctx.Fixing && !retryRefusal
+	// A reversion authorisation answers only the reversion gate that showed
+	// it, so any other entry - a retained-repair retry, an approval, or a fix
+	// response that did not select that refusal - drops it unused.
+	if !repairRequested || !pipeline.HasDecisionReversionRefusal(sctx.PreviousFindings) {
+		s.authorizedRefusal = nil
+	}
 	defer func() {
 		if outcome != nil {
 			if s.pendingFixSummary != "" {
