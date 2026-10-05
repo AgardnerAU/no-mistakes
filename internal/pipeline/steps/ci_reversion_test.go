@@ -279,6 +279,47 @@ func TestCIRepair_AllowsAnOrdinaryRepairOfTheBranchsOwnCode(t *testing.T) {
 	}
 }
 
+// TestCIRepair_ZeroBaseResolvesTheBranchFork covers a branch's first push to
+// the gate, where the run records git's all-zero base. The guard must measure
+// against the branch's fork from the default branch, as the fix prompt does,
+// rather than fail closed on every repair of a newly pushed branch.
+func TestCIRepair_ZeroBaseResolvesTheBranchFork(t *testing.T) {
+	t.Parallel()
+	const zeroSHA = "0000000000000000000000000000000000000000"
+
+	t.Run("ordinary repair commits", func(t *testing.T) {
+		t.Parallel()
+		dir, _, headSHA := branchRepo(t,
+			map[string]string{"main.go": "package main\n\nfunc main() {}\n"},
+			map[string]string{"feature.txt": "first draft\n"},
+		)
+		mustWrite(t, filepath.Join(dir, "feature.txt"), "repaired draft\n")
+
+		changed, err := commitRepairForTest(&CIStep{}, repairContext(t, dir, zeroSHA, headSHA), "repair the feature")
+		if err != nil {
+			t.Fatalf("ordinary CI repair on a newly pushed branch was refused: %v", err)
+		}
+		if !changed {
+			t.Fatal("ordinary CI repair on a newly pushed branch should commit")
+		}
+	})
+
+	t.Run("reversion is still refused", func(t *testing.T) {
+		t.Parallel()
+		dir, _, headSHA := branchRepo(t,
+			map[string]string{"guard.sh": "pin aaaa1111\n"},
+			map[string]string{"guard.sh": "pin bbbb2222\n"},
+		)
+		mustWrite(t, filepath.Join(dir, "guard.sh"), "pin aaaa1111\n")
+
+		_, err := commitRepairForTest(&CIStep{}, repairContext(t, dir, zeroSHA, headSHA), "restore the guard")
+		var reversion *decisionReversionError
+		if !errors.As(err, &reversion) || !strings.Contains(reversion.Error(), "guard.sh") {
+			t.Fatalf("commitRepair error = %v, want a refusal naming guard.sh", err)
+		}
+	})
+}
+
 // TestCIRepair_AllowsRepairsThatOnlyAddNewContent covers the other common shape:
 // the repair adds a file and appends to one the branch created.
 func TestCIRepair_AllowsRepairsThatOnlyAddNewContent(t *testing.T) {

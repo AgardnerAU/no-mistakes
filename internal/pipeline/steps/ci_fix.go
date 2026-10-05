@@ -590,7 +590,10 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
 	// Every round is checked, including a fix response: the response launches a
 	// fresh agent turn, so its result may differ from the refusal the person saw.
-	evidence, detectErr := detectDecisionReversion(sctx, sctx.Run.BaseSHA, sctx.Run.HeadSHA)
+	// A branch's first push records the zero base; resolve it to the fork from
+	// the PR base branch, as the fix prompt does, so the guard stays evaluable.
+	baseSHA := resolveBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, effectivePRBaseBranch(sctx))
+	evidence, detectErr := detectDecisionReversion(sctx, baseSHA, sctx.Run.HeadSHA)
 	var refusal *decisionReversionError
 	switch {
 	case detectErr != nil:
