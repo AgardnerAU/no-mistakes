@@ -906,3 +906,26 @@ func TestCIFixReversionOutcomeIsLeftToAPerson(t *testing.T) {
 		t.Fatal("an ordinary decision-check gate was treated as a reversion refusal")
 	}
 }
+
+// TestCIFixReversionOutcomeReadsAsASentence pins the gate text a person reads
+// before authorising a reversion, for both kinds of evidence.
+func TestCIFixReversionOutcomeReadsAsASentence(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{Log: func(string) {}, WorkDir: t.TempDir()}
+	refusal := newReversionRefusal([]reversionEvidence{
+		{Path: "guard.sh", Kind: reversionReinstatedText, Lines: []string{"unique-base-line"}},
+		{Path: "old.sh", Kind: reversionRestoredFile},
+	})
+	outcome := (&CIStep{}).ciFixReversionOutcome(sctx, "build", fmt.Errorf("commit repair: %w", refusal))
+	if outcome == nil {
+		t.Fatal("a refused repair must park")
+	}
+	for _, want := range []string{
+		"guard.sh would be given back pre-branch content the branch removed (for example: unique-base-line)",
+		"old.sh would be restored to its pre-branch content",
+	} {
+		if !strings.Contains(outcome.Findings, want) {
+			t.Fatalf("gate finding does not say %q: %s", want, outcome.Findings)
+		}
+	}
+}

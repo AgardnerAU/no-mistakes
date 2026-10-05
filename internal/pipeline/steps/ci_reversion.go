@@ -78,7 +78,7 @@ type reversionKind string
 
 const (
 	reversionRestoredFile   reversionKind = "restored to its pre-branch content"
-	reversionReinstatedText reversionKind = "reinstates pre-branch content the branch removed"
+	reversionReinstatedText reversionKind = "given back pre-branch content the branch removed"
 )
 
 // reversionEvidence is one file's proof that the proposed repair undoes work the
