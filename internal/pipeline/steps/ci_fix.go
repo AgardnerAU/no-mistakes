@@ -82,7 +82,9 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	targets, decisionChecks := targets.withoutDecisionChecks(ciConfig(sctx))
 	if len(decisionChecks) > 0 {
 		if targets.empty() {
-			return ciDecisionCheckOutcome(decisionChecks), nil
+			// The failures left unselected stay on the gate beside the decision
+			// checks, so approving it cannot pass a red build nobody saw.
+			return ciTerminalRepairOutcome(ciDecisionCheckOutcome(decisionChecks), Findings{}, sctx.DeferredFindings), nil
 		}
 		sctx.Log(fmt.Sprintf("leaving %s to a human decision, repairing the rest...", strings.Join(decisionChecks, ", ")))
 	}
@@ -280,7 +282,7 @@ CI logs:
 	if conclusionErr != nil {
 		sctx.Log(fmt.Sprintf("warning: could not parse CI repair conclusion: %v", conclusionErr))
 	}
-	repair, err := s.commitRepair(sctx, conclusion.Summary, result)
+	repair, err := s.commitRepair(sctx, baseBranch, conclusion.Summary, result)
 	var refusal *pipeline.ProtectedPathError
 	if errors.As(err, &refusal) {
 		head, recordErr := stepGitHeadSHA(sctx)
@@ -565,10 +567,10 @@ type ciRepairResult struct {
 
 // commitAndPush remains as the narrow test seam for the default summary.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (ciRepairResult, error) {
-	return s.commitRepair(sctx, "", nil)
+	return s.commitRepair(sctx, effectivePRBaseBranch(sctx), "", nil)
 }
 
-func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairResult, error) {
+func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext, baseBranch string) (ciRepairResult, error) {
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return ciRepairResult{}, err
 	}
@@ -576,7 +578,7 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	sctx.Log("retrying retained CI repair after protected-path refusal")
 	// The retained changes outlived the invocation that made them, so no
 	// producer is known here and the commit carries no trailers.
-	repair, err := s.commitRepair(sctx, "", nil)
+	repair, err := s.commitRepair(sctx, baseBranch, "", nil)
 	if err != nil || repair.HeadAdvanced {
 		return repair, err
 	}
@@ -587,12 +589,15 @@ func (s *CIStep) retryProtectedPathRepair(sctx *pipeline.StepContext) (ciRepairR
 	return s.recordRepair(sctx, head)
 }
 
-func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string, producer *agent.Result) (ciRepairResult, error) {
+// commitRepair commits the repair in the run worktree. baseBranch is the PR's
+// actual base branch, which the fixer already fetched (see autoFixCI).
+func (s *CIStep) commitRepair(sctx *pipeline.StepContext, baseBranch, summary string, producer *agent.Result) (ciRepairResult, error) {
 	// Every round is checked, including a fix response: the response launches a
 	// fresh agent turn, so its result may differ from the refusal the person saw.
 	// A branch's first push records the zero base; resolve it to the fork from
-	// the PR base branch, as the fix prompt does, so the guard stays evaluable.
-	baseSHA := resolveBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, effectivePRBaseBranch(sctx))
+	// the PR's actual base branch, as the fix prompt does, so the guard stays
+	// evaluable and measures the same branch work the fixer was shown.
+	baseSHA := resolveBaseSHA(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
 	evidence, detectErr := detectDecisionReversion(sctx, baseSHA, sctx.Run.HeadSHA)
 	var refusal *decisionReversionError
 	switch {

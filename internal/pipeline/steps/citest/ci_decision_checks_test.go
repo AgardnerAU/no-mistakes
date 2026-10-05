@@ -198,6 +198,75 @@ func TestCIStep_DecisionCheckBesideABuildFailureKeepsTheBuildRepairable(t *testi
 	}
 }
 
+// TestCIStep_FixSelectingOnlyTheDecisionCheckKeepsTheBuildOnTheGate stops a
+// fix response that selected only the decision check from hiding the build
+// failure left unselected beside it: the gate it returns still shows the build,
+// so approving it cannot pass a red build nobody saw.
+func TestCIStep_FixSelectingOnlyTheDecisionCheckKeepsTheBuildOnTheGate(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	checks := `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"},` +
+		`{"name":"Workflow pin","state":"FAILURE","bucket":"fail","completedAt":"2026-08-27T07:54:14Z"}]`
+	env, _ := stepstest.FakeCIGHLoggedSequence(t, "OPEN", []string{checks, checks, checks}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/2891"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{DecisionChecks: []string{"Workflow pin"}}
+
+	marshal := func(item types.Finding) string {
+		encoded, err := json.Marshal(types.Findings{Items: []types.Finding{item}})
+		if err != nil {
+			t.Fatalf("marshal findings: %v", err)
+		}
+		return string(encoded)
+	}
+	sctx.Fixing = true
+	sctx.PreviousFindings = marshal(types.Finding{ID: "ci-2", Severity: types.FindingSeverityError, Action: types.ActionAskUser, Category: types.FindingCategoryCICheck, Check: "Workflow pin", Description: "CI check failing: Workflow pin"})
+	sctx.DeferredFindings = marshal(types.Finding{ID: "ci-1", Severity: types.FindingSeverityError, Action: types.ActionAutoFix, Category: types.FindingCategoryCICheck, Check: "build", Description: "CI check failing: build"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := (&steps.CIStep{}).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		polls++
+		if polls >= 4 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("a fix response selecting only the decision check must park, got %+v", outcome)
+	}
+	if len(ag.Calls) != 0 {
+		t.Fatalf("the fix agent ran for a decision check (%d invocations)", len(ag.Calls))
+	}
+	var findings types.Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	checksOnGate := map[string]bool{}
+	for _, item := range findings.Items {
+		checksOnGate[item.Check] = true
+	}
+	if len(findings.Items) != 2 || !checksOnGate["build"] || !checksOnGate["Workflow pin"] {
+		t.Fatalf("findings = %+v, want the decision check and the unselected build failure", findings.Items)
+	}
+}
+
 // TestCIStep_FixRoundRepairsTheBuildButNeverShowsTheAgentTheDecisionCheck
 // keeps decision checks outside the fix agent by excluding them from its
 // targets, so a fix response that selects both still repairs the build.

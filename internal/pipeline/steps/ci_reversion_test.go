@@ -320,6 +320,49 @@ func TestCIRepair_ZeroBaseResolvesTheBranchFork(t *testing.T) {
 	})
 }
 
+// TestCIRepair_ZeroBaseMeasuresAgainstThePRsActualBase covers a newly pushed
+// branch whose PR targets a different branch than the configured one. The fix
+// agent is shown the actual PR base, so the guard must measure the branch's
+// work from that same fork, not from the configured base.
+func TestCIRepair_ZeroBaseMeasuresAgainstThePRsActualBase(t *testing.T) {
+	t.Parallel()
+	const zeroSHA = "0000000000000000000000000000000000000000"
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	// main pins v1, the PR's actual base develop pins v2, and the branch pins v3.
+	dir, _, _ := branchRepo(t,
+		map[string]string{"guard.sh": "pin v1\n"},
+		map[string]string{"guard.sh": "pin v2\n"},
+	)
+	gitCmd(t, dir, "branch", "-m", "feature", "develop")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main", "develop")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	mustWrite(t, filepath.Join(dir, "guard.sh"), "pin v3\n")
+	gitCmd(t, dir, "commit", "-am", "branch pins v3")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// The repair puts back develop's pin, undoing the branch's only change.
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		mustWrite(t, filepath.Join(dir, "guard.sh"), "pin v2\n")
+		return &agent.Result{}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, zeroSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "main"
+	pr := &scm.PR{Number: "1", BaseBranch: "develop"}
+
+	_, err := (&CIStep{}).autoFixCI(sctx, &recordingDecisionHost{}, pr, ciFixTargets{Checks: []scm.CheckTarget{{Name: "build"}}})
+	var reversion *decisionReversionError
+	if !errors.As(err, &reversion) || !strings.Contains(reversion.Error(), "guard.sh") {
+		t.Fatalf("autoFixCI error = %v, want a refusal naming guard.sh measured from the PR's actual base", err)
+	}
+	if head := gitCmd(t, dir, "rev-parse", "HEAD"); head != headSHA {
+		t.Fatalf("the reversion was committed (head %s, want %s)", head, headSHA)
+	}
+}
+
 // TestCIRepair_AllowsRepairsThatOnlyAddNewContent covers the other common shape:
 // the repair adds a file and appends to one the branch created.
 func TestCIRepair_AllowsRepairsThatOnlyAddNewContent(t *testing.T) {
@@ -883,7 +926,7 @@ func TestReversionEvidenceKeepsWhitespaceOutOfTheIdentityCollapse(t *testing.T) 
 }
 
 func commitRepairForTest(step *CIStep, sctx *pipeline.StepContext, summary string) (bool, error) {
-	repair, err := step.commitRepair(sctx, summary, nil)
+	repair, err := step.commitRepair(sctx, effectivePRBaseBranch(sctx), summary, nil)
 	step.ciFixReversionOutcome(sctx, summary, err)
 	return repair.HeadAdvanced, err
 }
