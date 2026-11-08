@@ -179,13 +179,13 @@ func commitPipelineCorrectionWithCleanup(
 // staging. Stage tracked updates first so an intentionally tracked file there
 // continues to behave like any other tracked file.
 func stagePipelineChanges(sctx *pipeline.StepContext) (bool, error) {
-	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-u"); err != nil {
+	if _, err := stepGitRun(sctx, "add", "-u"); err != nil {
 		return false, err
 	}
-	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A", "--", ".", ":(exclude,glob)**/.playwright-mcp/**"); err != nil {
+	if _, err := stepGitRun(sctx, "add", "-A", "--", ".", ":(exclude,glob)**/.playwright-mcp/**"); err != nil {
 		return false, err
 	}
-	staged, err := git.Run(sctx.Ctx, sctx.WorkDir, "diff", "--cached", "--name-only", "-z")
+	staged, err := stepGitRunRaw(sctx, "diff", "--cached", "--name-only", "-z")
 	return staged != "", err
 }
 
