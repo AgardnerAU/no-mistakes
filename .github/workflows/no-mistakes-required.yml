@@ -2,7 +2,9 @@ name: Require no-mistakes
 run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
 on:
-  pull_request:
+  # The workflow and its repository-scoped policy must come from the base,
+  # not from the pull request being judged. Never execute PR code here.
+  pull_request_target:
     # Body-bearing events only. The verdict is a pure function of
     # pull_request.body, so a push carries no new body to judge - but it does
     # move the head SHA. The pipeline pushes (Push step) before it writes the
@@ -36,7 +38,8 @@ concurrency:
 
 jobs:
   check:
-    name: PR must be raised via no-mistakes
+    # A skipped check explicitly named exempt cannot be mistaken for a pass.
+    name: ${{ github.repository == 'AgardnerAU/no-mistakes' && 'PR must be raised via no-mistakes (direct PR exempt)' || 'PR must be raised via no-mistakes' }}
     runs-on: ubuntu-latest
     # Known automation accounts are exempt so the release pipeline keeps working:
     # - github-actions[bot] opens the release-please PR via GITHUB_TOKEN
@@ -48,7 +51,10 @@ jobs:
     # a GITHUB_TOKEN PR's run is created in action_required and never starts. A
     # skipped job is also what every ruleset in the fleet already sees for these
     # authors, so keeping the condition here preserves the exact verdict shape.
+    # This is the protected base-branch policy for the captain's fork only.
+    # Changing it in a PR cannot exempt that same PR.
     if: >-
+      github.repository != 'AgardnerAU/no-mistakes' &&
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       github.event.pull_request.user.login != 'release-please[bot]'

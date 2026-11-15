@@ -2,13 +2,15 @@
 
 Thanks for wanting to contribute. One rule up front:
 
-**All pull requests to this repository must be raised through `no-mistakes`.**
+**Pull requests to the upstream repository must be raised through `no-mistakes`.**
+
+The `AgardnerAU/no-mistakes` fork permits direct PRs: its base-branch workflow reports a skipped check named `PR must be raised via no-mistakes (direct PR exempt)`. This is an exemption, not evidence that the pipeline ran. The rule takes effect only after it is present on the base branch.
 
 This repo _is_ no-mistakes. Contributions should be done using the tool itself, which reduces the maintainer's burden of reviewing and merging contributions.
-The `Require no-mistakes` GitHub Actions workflow runs on every PR and fails if the body is missing the deterministic signature and structured pipeline step attestation that no-mistakes writes. PRs without them will not be reviewed or merged.
+For upstream, the `Require no-mistakes` GitHub Actions workflow runs on every PR and fails if the body is missing the deterministic signature and structured pipeline step attestation that no-mistakes writes. PRs without them will not be reviewed or merged.
 If you revise the PR description after no-mistakes creates it, preserve the generated `## Pipeline` section. Replacing the whole body removes the signature or attestation and makes the required check fail until no-mistakes writes the section again.
 
-Every `opened` or `edited` event gets an independent run, including first-time-fork runs that become actionable through GitHub's normal approval process. The integration contract for consumers such as Wheelhouse is:
+Each upstream `opened` or `edited` event gets an independent run. The integration contract for consumers such as Wheelhouse is:
 
 - The stable check name is `PR must be raised via no-mistakes`.
 - The reusable check implementation is the shared composite action in [`.github/actions/require-no-mistakes`](.github/actions/require-no-mistakes/README.md). Consumers pin it to a release tag or commit SHA rather than copying the enforcement shell. This repository uses the same action through a thin workflow caller.
