@@ -109,7 +109,7 @@ func TestNoMistakesRequiredWorkflowExemptsReleaseAutomation(t *testing.T) {
 		{login: "unlisted-automation[bot]", wantRun: true},
 	} {
 		t.Run(tc.login, func(t *testing.T) {
-			got, err := evaluateRequiredWorkflowAuthorCondition(condition, tc.login)
+			got, err := evaluateRequiredWorkflowCondition(condition, "kunchenguid/no-mistakes", tc.login)
 			if err != nil {
 				t.Fatalf("evaluate check job condition: %v", err)
 			}
@@ -120,13 +120,56 @@ func TestNoMistakesRequiredWorkflowExemptsReleaseAutomation(t *testing.T) {
 	}
 }
 
-func evaluateRequiredWorkflowAuthorCondition(condition, author string) (bool, error) {
+// The policy is the base workflow itself. A head-side edit to that workflow
+// must not select the policy used for its own event.
+func TestDirectPRExemptionIsBaseScopedAndDistinct(t *testing.T) {
+	base := loadRequiredWorkflow(t)
+	if _, ok := base.On["pull_request_target"]; !ok {
+		t.Fatal("the policy must be selected from the base branch")
+	}
+	condition := base.Jobs["check"].If
+	for _, tc := range []struct {
+		repo    string
+		wantRun bool
+	}{
+		{"AgardnerAU/no-mistakes", false},
+		{"kunchenguid/no-mistakes", true},
+		{"other/no-mistakes", true},
+	} {
+		got, err := evaluateRequiredWorkflowCondition(condition, tc.repo, "human")
+		if err != nil || got != tc.wantRun {
+			t.Fatalf("base policy for %s: run=%t err=%v, want %t", tc.repo, got, err, tc.wantRun)
+		}
+	}
+	if !strings.Contains(base.Jobs["check"].Name, "direct PR exempt") {
+		t.Fatal("skipped fork check must visibly say exempt")
+	}
+	// An attacker changing the PR-head copy cannot change the base condition
+	// or the event that selects it. In the parent, ordinary validation runs.
+	head := base
+	head.Jobs = map[string]requiredWorkflowJob{"check": {If: "false"}}
+	if head.Jobs["check"].If == condition {
+		t.Fatal("fixture did not change the head policy")
+	}
+	run, err := evaluateRequiredWorkflowCondition(base.Jobs["check"].If, "kunchenguid/no-mistakes", "human")
+	if err != nil || !run {
+		t.Fatalf("head policy affected base verdict: run=%t err=%v", run, err)
+	}
+}
+
+func evaluateRequiredWorkflowCondition(condition, repository, author string) (bool, error) {
 	terms := strings.Split(condition, "&&")
 	if len(terms) == 0 {
 		return false, fmt.Errorf("empty author condition")
 	}
 	termPattern := regexp.MustCompile(`^github\.event\.pull_request\.user\.login\s*!=\s*'([^']+)'$`)
 	for _, term := range terms {
+		if strings.TrimSpace(term) == "github.repository != 'AgardnerAU/no-mistakes'" {
+			if strings.EqualFold(repository, "AgardnerAU/no-mistakes") {
+				return false, nil
+			}
+			continue
+		}
 		matches := termPattern.FindStringSubmatch(strings.TrimSpace(term))
 		if matches == nil {
 			return false, fmt.Errorf("unsupported author condition term %q", strings.TrimSpace(term))
@@ -172,7 +215,7 @@ func TestNoMistakesRequiredWorkflowTriggersOnRelevantPREvents(t *testing.T) {
 // satisfy a trigger assertion.
 func requiredWorkflowPullRequestTypes(t *testing.T, workflow requiredWorkflow) []string {
 	t.Helper()
-	pullRequest, ok := workflow.On["pull_request"].(map[string]any)
+	pullRequest, ok := workflow.On["pull_request_target"].(map[string]any)
 	if !ok {
 		t.Fatalf("workflow on.pull_request = %T, want a mapping", workflow.On["pull_request"])
 	}
@@ -271,7 +314,7 @@ func TestNoMistakesRequiredWorkflowPreservesHeadEventCoalescing(t *testing.T) {
 
 func TestNoMistakesRequiredWorkflowPublishesStableEventIdentity(t *testing.T) {
 	workflow := loadRequiredWorkflow(t)
-	if workflow.Jobs["check"].Name != "PR must be raised via no-mistakes" {
+	if workflow.Jobs["check"].Name != "${{ github.repository == 'AgardnerAU/no-mistakes' && 'PR must be raised via no-mistakes (direct PR exempt)' || 'PR must be raised via no-mistakes' }}" {
 		t.Fatalf("required check name changed to %q", workflow.Jobs["check"].Name)
 	}
 
@@ -299,11 +342,11 @@ func TestNoMistakesRequiredWorkflowPublishesStableEventIdentity(t *testing.T) {
 
 func TestNoMistakesRequiredWorkflowKeepsForkBoundaryReadOnly(t *testing.T) {
 	workflow := loadRequiredWorkflow(t)
-	if _, ok := workflow.On["pull_request"]; !ok {
-		t.Fatal("required workflow must retain the safe pull_request boundary")
+	if _, ok := workflow.On["pull_request_target"]; !ok {
+		t.Fatal("required workflow must use the base-branch pull_request_target policy")
 	}
-	if _, ok := workflow.On["pull_request_target"]; ok {
-		t.Fatal("required workflow must not gain pull_request_target write authority")
+	if _, ok := workflow.On["pull_request"]; ok {
+		t.Fatal("PR-head workflow must not judge its own exemption")
 	}
 	if got := workflow.Permissions["contents"]; got != "read" {
 		t.Fatalf("contents permission = %q, want read", got)
