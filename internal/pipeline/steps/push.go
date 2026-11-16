@@ -48,17 +48,20 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		staged, err := stagePipelineChanges(sctx)
+		if err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		if err := commitPipelineCorrection(ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
+		if staged {
+			if err := commitPipelineCorrection(ctx, sctx.WorkDir, "no-mistakes: apply agent fixes", sctx.Log); err != nil {
+				return nil, fmt.Errorf("commit agent changes: %w", err)
+			}
+			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve head after commit: %w", err)
+			}
+			newHeadSHA = headSHA
 		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
-		}
-		newHeadSHA = headSHA
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)

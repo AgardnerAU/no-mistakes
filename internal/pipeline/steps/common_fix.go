@@ -175,6 +175,20 @@ func commitPipelineCorrectionWithCleanup(
 	return commitErr
 }
 
+// stagePipelineChanges excludes Playwright MCP's generated output from catch-all
+// staging. Stage tracked updates first so an intentionally tracked file there
+// continues to behave like any other tracked file.
+func stagePipelineChanges(sctx *pipeline.StepContext) (bool, error) {
+	if _, err := stepGitRun(sctx, "add", "-u"); err != nil {
+		return false, err
+	}
+	if _, err := stepGitRun(sctx, "add", "-A", "--", ".", ":(exclude,glob)**/.playwright-mcp/**"); err != nil {
+		return false, err
+	}
+	staged, err := stepGitRunRaw(sctx, "diff", "--cached", "--name-only", "-z")
+	return staged != "", err
+}
+
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
@@ -195,8 +209,13 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+	staged, err := stagePipelineChanges(sctx)
+	if err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if !staged {
+		sctx.Log("no agent changes to commit")
+		return nil
 	}
 	if err := commitPipelineCorrection(ctx, sctx.WorkDir, commitMessage, sctx.Log); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)

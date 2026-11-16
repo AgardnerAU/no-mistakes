@@ -286,8 +286,16 @@ func (s *CIStep) commitRepair(sctx *pipeline.StepContext, summary string) (bool,
 	if err != nil {
 		return false, fmt.Errorf("render CI repair commit message: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
+	staged, err := stagePipelineChanges(sctx)
+	if err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
+	}
+	if !staged {
+		headSHA, err := stepGitHeadSHA(sctx)
+		if err == nil && headSHA != sctx.Run.HeadSHA {
+			return s.recordLocalRepair(sctx, headSHA)
+		}
+		return false, nil
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", message); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
